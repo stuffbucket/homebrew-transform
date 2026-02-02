@@ -1,0 +1,11 @@
+# Formula transformation pipeline
+# Each transform is applied in order to goreleaser-generated formulas
+
+transforms:
+  - name: hoist_methods
+    config:
+      # Methods to hoist from nested on_* blocks to class level
+      methods:
+        - install
+        - test
+        - caveats

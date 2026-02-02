@@ -1,0 +1,41 @@
+name: Transform GoReleaser Formulas
+
+on:
+  push:
+    paths:
+      - 'Formula/*.rb'
+
+permissions:
+  contents: write
+
+jobs:
+  transform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get changed formula files
+        id: changed
+        run: |
+          files=$(git diff --name-only HEAD~1 HEAD -- 'Formula/*.rb' 2>/dev/null | tr '\n' ' ' || echo '')
+          echo "files=$files" >> $GITHUB_OUTPUT
+
+      - name: Transform formulas
+        if: steps.changed.outputs.files != ''
+        uses: ./
+        with:
+          files: ${{ steps.changed.outputs.files }}
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "fix: transform goreleaser formula"
+            git push
+          fi
