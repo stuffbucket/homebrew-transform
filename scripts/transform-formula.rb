@@ -123,7 +123,9 @@ module FormulaTransforms
                    else [body]
                    end
 
-      order.each { |m| body_nodes << methods[m] if methods[m] }
+      # Sort extracted methods by their position in the config's order array
+      sorted_methods = methods.keys.sort_by { |m| order.index(m) || Float::INFINITY }
+      sorted_methods.each { |m| body_nodes << methods[m] }
 
       new_body = Parser::AST::Node.new(:begin, body_nodes)
       class_node.updated(nil, [name, superclass, new_body])
@@ -135,9 +137,102 @@ module FormulaTransforms
     end
   end
 
+  # Reorders class-level methods and DSL blocks (test do, caveats do) to match config order
+  class ReorderMethods < Transform
+    def applies?(_content, ast)
+      class_node = find_class_node(ast)
+      return false unless class_node
+
+      methods = (config['methods'] || %w[install test caveats]).map(&:to_sym)
+      body = class_node.children[2]
+      return false unless body
+
+      body_nodes = body.type == :begin ? body.children : [body]
+      positions = find_method_positions(body_nodes, methods)
+
+      # Check if reordering is needed
+      return false if positions.size < 2
+
+      sorted = positions.sort_by { |m, _| methods.index(m) || Float::INFINITY }
+      positions.keys != sorted.map(&:first)
+    end
+
+    def apply(_content, ast)
+      class_node = find_class_node(ast)
+      return ast unless class_node
+
+      methods = (config['methods'] || %w[install test caveats]).map(&:to_sym)
+      result = reorder_class_body(class_node, methods)
+
+      replace_class_node(ast, class_node, result)
+    end
+
+    private
+
+    def reorder_class_body(class_node, method_order)
+      name, superclass, body = class_node.children
+      return class_node unless body
+
+      body_nodes = body.type == :begin ? body.children.dup : [body]
+
+      # Separate method/block nodes from other nodes
+      method_nodes = {}
+      other_nodes = []
+
+      body_nodes.each do |node|
+        method_name = extract_method_name(node, method_order)
+        if method_name
+          method_nodes[method_name] = node
+        else
+          other_nodes << node
+        end
+      end
+
+      # Rebuild body: other nodes first, then methods in config order
+      sorted_methods = method_nodes.keys.sort_by { |m| method_order.index(m) || Float::INFINITY }
+      new_body_nodes = other_nodes + sorted_methods.map { |m| method_nodes[m] }
+
+      new_body = Parser::AST::Node.new(:begin, new_body_nodes)
+      class_node.updated(nil, [name, superclass, new_body])
+    end
+
+    def extract_method_name(node, target_methods)
+      return nil unless node.is_a?(Parser::AST::Node)
+
+      # def install / def test / def caveats
+      return node.children[0] if node.type == :def && target_methods.include?(node.children[0])
+
+      # test do ... end / caveats do ... end (block with send)
+      if node.type == :block
+        send_node = node.children[0]
+        if send_node.is_a?(Parser::AST::Node) && send_node.type == :send
+          method_name = send_node.children[1]
+          return method_name if target_methods.include?(method_name)
+        end
+      end
+
+      nil
+    end
+
+    def find_method_positions(body_nodes, target_methods)
+      positions = {}
+      body_nodes.each_with_index do |node, idx|
+        method_name = extract_method_name(node, target_methods)
+        positions[method_name] = idx if method_name
+      end
+      positions
+    end
+
+    def replace_class_node(ast, old_class, new_class)
+      return new_class if ast == old_class
+      ast.updated(nil, ast.children.map { |c| c == old_class ? new_class : c })
+    end
+  end
+
   # Registry of available transforms
   REGISTRY = {
-    'hoist_methods' => HoistMethods
+    'hoist_methods' => HoistMethods,
+    'reorder_methods' => ReorderMethods
   }.freeze
 end
 
@@ -194,7 +289,8 @@ class FormulaProcessor
   def default_config
     {
       'transforms' => [
-        { 'name' => 'hoist_methods', 'config' => { 'methods' => %w[install test caveats] } }
+        { 'name' => 'hoist_methods', 'config' => { 'methods' => %w[install test caveats] } },
+        { 'name' => 'reorder_methods', 'config' => { 'methods' => %w[install test caveats] } }
       ]
     }
   end

@@ -9,3 +9,11 @@ transforms:
         - install
         - test
         - caveats
+
+  - name: reorder_methods
+    config:
+      # Reorder class-level methods/blocks (def install, test do, etc.) to this order
+      methods:
+        - install
+        - test
+        - caveats

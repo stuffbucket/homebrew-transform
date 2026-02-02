@@ -7,6 +7,23 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler: none
+
+      - name: Install rubocop
+        run: gem install rubocop
+
+      - name: Lint
+        run: rubocop scripts/ test/ --except Style/Documentation,Style/FrozenStringLiteralComment,Metrics,Layout,Naming
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -20,6 +37,7 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby-version }}
+          bundler: none
 
       - name: Install dependencies
         run: gem install parser unparser minitest
@@ -32,7 +50,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create test formula
+      - name: Setup Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler: none
+
+      - name: Install dependencies
+        run: gem install parser unparser rubocop
+
+      - name: Create test formula with test do before install
         run: |
           mkdir -p Formula
           cat > Formula/test.rb << 'EOF'
@@ -43,29 +73,49 @@ jobs:
           class Test < Formula
             desc "Test formula"
             homepage "https://example.com"
+            version "1.0.0"
 
             on_macos do
               if Hardware::CPU.arm?
                 url "https://example.com/test-arm64.tar.gz"
                 sha256 "abc123"
-
-                def install
-                  bin.install "test"
-                end
               end
+            end
+
+            on_linux do
+              url "https://example.com/test-linux.tar.gz"
+              sha256 "def456"
+            end
+
+            test do
+              system bin/"test", "--version"
+            end
+
+            def install
+              bin.install "test"
             end
           end
           EOF
 
-      - name: Run action
-        uses: ./
-        with:
-          files: Formula/test.rb
+      - name: Run transform script
+        run: ruby scripts/transform-formula.rb Formula/test.rb
+
+      - name: Fix style
+        run: rubocop --autocorrect --only Style/BlockDelimiters Formula/test.rb || true
 
       - name: Verify transformation
         run: |
-          # Should have def install at class level
-          grep -E '^  def install' Formula/test.rb
-          # Should NOT have nested def install
-          ! grep -E '^      def install' Formula/test.rb
-          echo "Integration test passed"
+          cat Formula/test.rb
+          # install should come before test
+          install_line=$(grep -n 'def install' Formula/test.rb | cut -d: -f1)
+          test_line=$(grep -n 'test do' Formula/test.rb | cut -d: -f1)
+          echo "install at line $install_line, test at line $test_line"
+          [ "$install_line" -lt "$test_line" ] || exit 1
+
+      - name: Create temp tap for audit
+        run: |
+          brew tap-new --no-git local/test
+          cp Formula/test.rb $(brew --repository)/Library/Taps/local/homebrew-test/Formula/
+
+      - name: Run brew audit
+        run: brew audit --strict local/test/test
